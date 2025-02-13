@@ -1,66 +1,83 @@
-// Package plugindemo a demo plugin.
-package plugindemo
+package main
 
 import (
-	"bytes"
-	"context"
-	"fmt"
-	"net/http"
-	"text/template"
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "time"
+
+    "github.com/go-redis/redis/v8"
 )
 
-// Config the plugin configuration.
-type Config struct {
-	Headers map[string]string `json:"headers,omitempty"`
+var ctx = context.Background()
+
+func main() {
+    // Initialize Redis client
+    redisClient := redis.NewClient(&redis.Options{
+        Addr:     "localhost:6379", // Replace with your Redis address
+        Password: "",               // No password by default
+        DB:       0,                // Use default DB
+    })
+
+    // Start the HTTP server
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        key := generateCacheKey(r)
+
+        // Check if the response exists in Redis
+        val, err := redisClient.Get(ctx, key).Result()
+        if err == redis.Nil {
+            // Cache miss: Fetch from backend and cache the response
+            log.Printf("Cache miss for key: %s", key)
+            cacheMissHandler(w, r, redisClient, key)
+        } else if err != nil {
+            // Error fetching from Redis
+            log.Printf("Error fetching from Redis: %v", err)
+            http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+        } else {
+            // Cache hit: Serve the cached response
+            log.Printf("Cache hit for key: %s", key)
+            w.Header().Set("X-Cache", "HIT")
+            w.Write([]byte(val))
+        }
+    })
+
+    log.Println("Starting middleware service on :8080...")
+    log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-// CreateConfig creates the default plugin configuration.
-func CreateConfig() *Config {
-	return &Config{
-		Headers: make(map[string]string),
-	}
+func cacheMissHandler(w http.ResponseWriter, r *http.Request, redisClient *redis.Client, key string) {
+    // Forward the request to the backend service
+    resp, err := http.DefaultTransport.RoundTrip(r)
+    if err != nil {
+        http.Error(w, "Failed to fetch from backend", http.StatusBadGateway)
+        return
+    }
+    defer resp.Body.Close()
+
+    // Read the response body
+    bodyBytes, err := io.ReadAll(resp.Body)
+    if err != nil {
+        http.Error(w, "Failed to read response body", http.StatusInternalServerError)
+        return
+    }
+
+    // Cache the response in Redis
+    err = redisClient.Set(ctx, key, string(bodyBytes), time.Hour).Err()
+    if err != nil {
+        log.Printf("Error caching response: %v", err)
+    }
+
+    // Copy the response to the client
+    for k, vv := range resp.Header {
+        for _, v := range vv {
+            w.Header().Add(k, v)
+        }
+    }
+    w.WriteHeader(resp.StatusCode)
+    w.Write(bodyBytes)
 }
 
-// Demo a Demo plugin.
-type Demo struct {
-	next     http.Handler
-	headers  map[string]string
-	name     string
-	template *template.Template
-}
-
-// New created a new Demo plugin.
-func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	if len(config.Headers) == 0 {
-		return nil, fmt.Errorf("headers cannot be empty")
-	}
-
-	return &Demo{
-		headers:  config.Headers,
-		next:     next,
-		name:     name,
-		template: template.New("demo").Delims("[[", "]]"),
-	}, nil
-}
-
-func (a *Demo) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	for key, value := range a.headers {
-		tmpl, err := a.template.Parse(value)
-		if err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		writer := &bytes.Buffer{}
-
-		err = tmpl.Execute(writer, req)
-		if err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		req.Header.Set(key, writer.String())
-	}
-
-	a.next.ServeHTTP(rw, req)
+func generateCacheKey(r *http.Request) string {
+    return fmt.Sprintf("%s:%s", r.Method, r.URL.String())
 }
