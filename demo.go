@@ -1,83 +1,145 @@
-package main
+// Package signatureverifier is a Traefik middleware plugin that verifies request signatures
+package signatureverifier
 
 import (
     "context"
+    "crypto/sha256"
+    "encoding/base64"
+    "encoding/hex"
+    "encoding/json"
     "fmt"
-    "log"
     "net/http"
-    "time"
-
-    "github.com/go-redis/redis/v8"
+    "sort"
+    "strings"
+    "unicode"
 )
 
-var ctx = context.Background()
-
-func main() {
-    // Initialize Redis client
-    redisClient := redis.NewClient(&redis.Options{
-        Addr:     "localhost:6379", // Replace with your Redis address
-        Password: "",               // No password by default
-        DB:       0,                // Use default DB
-    })
-
-    // Start the HTTP server
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        key := generateCacheKey(r)
-
-        // Check if the response exists in Redis
-        val, err := redisClient.Get(ctx, key).Result()
-        if err == redis.Nil {
-            // Cache miss: Fetch from backend and cache the response
-            log.Printf("Cache miss for key: %s", key)
-            cacheMissHandler(w, r, redisClient, key)
-        } else if err != nil {
-            // Error fetching from Redis
-            log.Printf("Error fetching from Redis: %v", err)
-            http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-        } else {
-            // Cache hit: Serve the cached response
-            log.Printf("Cache hit for key: %s", key)
-            w.Header().Set("X-Cache", "HIT")
-            w.Write([]byte(val))
-        }
-    })
-
-    log.Println("Starting middleware service on :8080...")
-    log.Fatal(http.ListenAndServe(":8080", nil))
+// Config holds the plugin configuration
+type Config struct {
+    SecretClient string `json:"secretClient,omitempty"`
 }
 
-func cacheMissHandler(w http.ResponseWriter, r *http.Request, redisClient *redis.Client, key string) {
-    // Forward the request to the backend service
-    resp, err := http.DefaultTransport.RoundTrip(r)
-    if err != nil {
-        http.Error(w, "Failed to fetch from backend", http.StatusBadGateway)
-        return
+// CreateConfig creates the default plugin configuration
+func CreateConfig() *Config {
+    return &Config{
+        SecretClient: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG", // Your default secret
     }
-    defer resp.Body.Close()
+}
 
-    // Read the response body
-    bodyBytes, err := io.ReadAll(resp.Body)
-    if err != nil {
-        http.Error(w, "Failed to read response body", http.StatusInternalServerError)
+type SignatureVerifier struct {
+    next         http.Handler
+    secretClient string
+    name         string
+}
+
+// New creates a new signature verification middleware
+func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+    return &SignatureVerifier{
+        next:         next,
+        secretClient: config.SecretClient,
+        name:         name,
+    }, nil
+}
+
+func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+    guide := req.Header.Get("X-Guide")
+    timestamp := req.Header.Get("X-Timestamp")
+    signature := req.Header.Get("X-Signature")
+
+    if guide == "" || timestamp == "" || signature == "" {
+        http.Error(rw, "Missing required headers", http.StatusBadRequest)
         return
     }
 
-    // Cache the response in Redis
-    err = redisClient.Set(ctx, key, string(bodyBytes), time.Hour).Err()
-    if err != nil {
-        log.Printf("Error caching response: %v", err)
-    }
-
-    // Copy the response to the client
-    for k, vv := range resp.Header {
-        for _, v := range vv {
-            w.Header().Add(k, v)
+    // Parse request body
+    var requestData map[string]interface{}
+    if req.Body != nil {
+        if err := json.NewDecoder(req.Body).Decode(&requestData); err != nil {
+            http.Error(rw, "Invalid request body", http.StatusBadRequest)
+            return
         }
     }
-    w.WriteHeader(resp.StatusCode)
-    w.Write(bodyBytes)
+
+    // Calculate expected signature
+    expectedSignature, err := s.calculateSignature(guide, timestamp, requestData)
+    if err != nil {
+        http.Error(rw, "Error calculating signature", http.StatusInternalServerError)
+        return
+    }
+
+    if signature != expectedSignature {
+        http.Error(rw, "Invalid signature", http.StatusUnauthorized)
+        return
+    }
+
+    s.next.ServeHTTP(rw, req)
 }
 
-func generateCacheKey(r *http.Request) string {
-    return fmt.Sprintf("%s:%s", r.Method, r.URL.String())
+func (s *SignatureVerifier) calculateSignature(guide string, timestamp string, requestData map[string]interface{}) (string, error) {
+    // Extract values from request data
+    values := extractValues(requestData)
+    
+    // Concatenate strings
+    allowedChars := "abcdefghijklmnopqrstuvwxyz0123456789-/."
+    concatenatedString := guide + timestamp + strings.Join(values, "")
+    
+    // Normalize string
+    normalizedString := removeAccents(strings.ToLower(concatenatedString))
+    filteredString := filterString(normalizedString, allowedChars)
+    
+    // Calculate SHA-256 hash
+    hash := sha256.Sum256([]byte(filteredString))
+    hexHash := hex.EncodeToString(hash[:])
+    
+    // Convert to base64
+    signature := base64.StdEncoding.EncodeToString([]byte(hexHash))
+    return signature, nil
+}
+
+func extractValues(data interface{}) []string {
+    var values []string
+    
+    switch v := data.(type) {
+    case map[string]interface{}:
+        keys := make([]string, 0, len(v))
+        for k := range v {
+            keys = append(keys, k)
+        }
+        sort.Strings(keys)
+        
+        for _, k := range keys {
+            values = append(values, extractValues(v[k])...)
+        }
+    case []interface{}:
+        for _, item := range v {
+            values = append(values, extractValues(item)...)
+        }
+    default:
+        if v != nil {
+            values = append(values, fmt.Sprint(v))
+        }
+    }
+    
+    return values
+}
+
+func removeAccents(s string) string {
+    return strings.Map(func(r rune) rune {
+        switch {
+        case unicode.Is(unicode.Mn, r):
+            return -1
+        default:
+            return r
+        }
+    }, s)
+}
+
+func filterString(s string, allowed string) string {
+    var result strings.Builder
+    for _, c := range s {
+        if strings.ContainsRune(allowed, c) {
+            result.WriteRune(c)
+        }
+    }
+    return result.String()
 }
