@@ -2,7 +2,7 @@ displayName: Demo Plugin
 type: middleware
 iconPath: .assets/icon.png
 
-import: github.com/traefik/plugindemo
+import: github.com/othmane222/testplugin
 
 summary: '[Demo] Add Request Header'
 
