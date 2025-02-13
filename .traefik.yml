@@ -1,12 +1,6 @@
 displayName: Demo Plugin
 type: middleware
-iconPath: .assets/icon.png
-
 import: github.com/othmane222/testplugin
-
 summary: '[Demo] Add Request Header'
-
 testData:
-  Headers:
-    X-Demo: test
-    X-URL: '{{URL}}'
+  SecretClient: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG"

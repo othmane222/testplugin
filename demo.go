@@ -1,5 +1,5 @@
 // Package signatureverifier is a Traefik middleware plugin that verifies request signatures
-package signatureverifier
+package testplugin
 
 import (
     "context"
