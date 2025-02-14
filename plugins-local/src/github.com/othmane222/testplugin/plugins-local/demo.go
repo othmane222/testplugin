@@ -1,3 +1,4 @@
+// Package signatureverifier is a Traefik middleware plugin that verifies request signatures
 package testplugin
 
 import (
@@ -21,11 +22,10 @@ type Config struct {
 // CreateConfig creates the default plugin configuration
 func CreateConfig() *Config {
     return &Config{
-        SecretClient: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG", // Default secret
+        SecretClient: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG", // Your default secret
     }
 }
 
-// SignatureVerifier represents the middleware
 type SignatureVerifier struct {
     next         http.Handler
     secretClient string
@@ -41,7 +41,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
     }, nil
 }
 
-// ServeHTTP implements the http.Handler interface
 func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
     guide := req.Header.Get("X-Guide")
     timestamp := req.Header.Get("X-Timestamp")
@@ -55,16 +54,7 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
     // Parse request body
     var requestData map[string]interface{}
     if req.Body != nil {
-        defer req.Body.Close()
-        bodyBytes, err := io.ReadAll(req.Body)
-        if err != nil {
-            http.Error(rw, "Error reading request body", http.StatusBadRequest)
-            return
-        }
-
-        req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-        if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+        if err := json.NewDecoder(req.Body).Decode(&requestData); err != nil {
             http.Error(rw, "Invalid request body", http.StatusBadRequest)
             return
         }
@@ -77,36 +67,38 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
         return
     }
 
-    // Validate the signature
     if signature != expectedSignature {
         http.Error(rw, "Invalid signature", http.StatusUnauthorized)
         return
     }
 
-    // Pass the request to the next handler
     s.next.ServeHTTP(rw, req)
 }
 
-// calculateSignature computes the SHA-256 hash and encodes it as Base64
-func (s *SignatureVerifier) calculateSignature(guide, timestamp string, requestData map[string]interface{}) (string, error) {
+func (s *SignatureVerifier) calculateSignature(guide string, timestamp string, requestData map[string]interface{}) (string, error) {
+    // Extract values from request data
     values := extractValues(requestData)
+    
+    // Concatenate strings
     allowedChars := "abcdefghijklmnopqrstuvwxyz0123456789-/."
     concatenatedString := guide + timestamp + strings.Join(values, "")
-
+    
+    // Normalize string
     normalizedString := removeAccents(strings.ToLower(concatenatedString))
     filteredString := filterString(normalizedString, allowedChars)
-
+    
+    // Calculate SHA-256 hash
     hash := sha256.Sum256([]byte(filteredString))
     hexHash := hex.EncodeToString(hash[:])
+    
+    // Convert to base64
     signature := base64.StdEncoding.EncodeToString([]byte(hexHash))
-
     return signature, nil
 }
 
-// Helper functions
 func extractValues(data interface{}) []string {
     var values []string
-
+    
     switch v := data.(type) {
     case map[string]interface{}:
         keys := make([]string, 0, len(v))
@@ -114,7 +106,7 @@ func extractValues(data interface{}) []string {
             keys = append(keys, k)
         }
         sort.Strings(keys)
-
+        
         for _, k := range keys {
             values = append(values, extractValues(v[k])...)
         }
@@ -127,7 +119,7 @@ func extractValues(data interface{}) []string {
             values = append(values, fmt.Sprint(v))
         }
     }
-
+    
     return values
 }
 

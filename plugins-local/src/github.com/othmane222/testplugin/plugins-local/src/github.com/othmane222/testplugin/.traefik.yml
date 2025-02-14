@@ -1,0 +1,6 @@
+displayName: Demo Plugin
+type: middleware
+import: github.com/othmane222/testplugin
+summary: '[Demo] Add Request Header'
+testData:
+  SecretClient: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG"
