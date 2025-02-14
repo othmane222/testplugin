@@ -1,13 +1,14 @@
 package testplugin
 
 import (
+    "bytes"       // Added for NewBuffer
     "context"
     "crypto/sha256"
     "encoding/base64"
     "encoding/hex"
     "encoding/json"
     "fmt"
-    "io" // Add this import
+    "io"          // Required for ReadAll and NopCloser
     "net/http"
     "sort"
     "strings"
@@ -26,6 +27,7 @@ func CreateConfig() *Config {
     }
 }
 
+// SignatureVerifier represents the middleware
 type SignatureVerifier struct {
     next         http.Handler
     secretClient string
@@ -64,7 +66,7 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
         }
 
         // Reset the body so it can be passed downstream
-        req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+        req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Requires 'bytes' package
 
         // Decode the body into a map
         if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
