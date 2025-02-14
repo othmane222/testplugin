@@ -7,6 +7,7 @@ import (
     "encoding/hex"
     "encoding/json"
     "fmt"
+    "io" // Added this import to resolve the 'undefined: io' error
     "net/http"
     "sort"
     "strings"
@@ -25,6 +26,7 @@ func CreateConfig() *Config {
     }
 }
 
+// SignatureVerifier represents the middleware
 type SignatureVerifier struct {
     next         http.Handler
     secretClient string
@@ -40,12 +42,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
     }, nil
 }
 
+// ServeHTTP implements the http.Handler interface
 func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-    // Extract headers
+    // Extract required headers
     guide := req.Header.Get("X-Guide")
     timestamp := req.Header.Get("X-Timestamp")
     signature := req.Header.Get("X-Signature")
 
+    // Validate headers
     if guide == "" || timestamp == "" || signature == "" {
         http.Error(rw, "Missing required headers", http.StatusBadRequest)
         return
@@ -56,7 +60,7 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
     if req.Method == http.MethodPost || req.Method == http.MethodPut { // Only decode body for POST/PUT requests
         if req.Body != nil {
             defer req.Body.Close()
-            bodyBytes, err := io.ReadAll(req.Body)
+            bodyBytes, err := io.ReadAll(req.Body) // Use io to read the body
             if err != nil {
                 http.Error(rw, "Error reading request body", http.StatusBadRequest)
                 return
@@ -90,6 +94,7 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
     s.next.ServeHTTP(rw, req)
 }
 
+// calculateSignature computes the SHA-256 hash and encodes it as Base64
 func (s *SignatureVerifier) calculateSignature(guide string, timestamp string, requestData map[string]interface{}) (string, error) {
     values := extractValues(requestData)
     allowedChars := "abcdefghijklmnopqrstuvwxyz0123456789-/."
@@ -105,6 +110,7 @@ func (s *SignatureVerifier) calculateSignature(guide string, timestamp string, r
     return signature, nil
 }
 
+// extractValues recursively extracts values from a JSON structure
 func extractValues(data interface{}) []string {
     var values []string
 
@@ -132,6 +138,7 @@ func extractValues(data interface{}) []string {
     return values
 }
 
+// removeAccents removes accented characters from a string
 func removeAccents(s string) string {
     return strings.Map(func(r rune) rune {
         switch {
@@ -143,6 +150,7 @@ func removeAccents(s string) string {
     }, s)
 }
 
+// filterString filters a string to allow only specific characters
 func filterString(s string, allowed string) string {
     var result strings.Builder
     for _, c := range s {
