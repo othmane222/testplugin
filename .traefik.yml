@@ -1,6 +1,8 @@
-displayName: Demo Plugin
+displayName: Traefik Signature Verifier
 type: middleware
 import: github.com/othmane222/testplugin
-summary: '[Demo] Add Request Header'
+summary: Verifies request signatures based on Authorization, X-Date, and a shared secret key.
 testData:
-  SecretClient: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG"
+  secretKey: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG"
+
+

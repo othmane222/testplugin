@@ -5,88 +5,87 @@ import (
     "crypto/sha256"
     "encoding/base64"
     "encoding/hex"
-    "encoding/json"
     "fmt"
-    "io" // Added this import to resolve the 'undefined: io' error
     "net/http"
-    "sort"
     "strings"
-    "unicode"
+    "time"
+
+    "github.com/othmane222/testplugin"
 )
 
 // Config holds the plugin configuration
 type Config struct {
-    SecretClient string `json:"secretClient,omitempty"`
+    SecretKey string `json:"secretKey,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration
 func CreateConfig() *Config {
     return &Config{
-        SecretClient: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG", // Default secret
+        SecretKey: "Oj2eKc2nZwzTIRYBWEmOT4rKggn53meG", // Default secret key
     }
 }
 
 // SignatureVerifier represents the middleware
 type SignatureVerifier struct {
-    next         http.Handler
-    secretClient string
-    name         string
+    next       http.Handler
+    secretKey  string
+    name       string
+    sigHeader  string
+    dateHeader string
 }
 
-// New creates a new signature verification middleware
+// New creates a new instance of the plugin middleware
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
     return &SignatureVerifier{
-        next:         next,
-        secretClient: config.SecretClient,
-        name:         name,
+        next:       next,
+        secretKey:  config.SecretKey,
+        name:       name,
+        sigHeader:  "X-Request-Signature",
+        dateHeader: "X-Date",
     }, nil
 }
 
 // ServeHTTP implements the http.Handler interface
 func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
     // Extract required headers
-    guide := req.Header.Get("X-Guide")
-    timestamp := req.Header.Get("X-Timestamp")
-    signature := req.Header.Get("X-Signature")
+    token := extractTokenFromAuthHeader(req.Header.Get("Authorization"))
+    timestamp := req.Header.Get(s.dateHeader)
+    signature := req.Header.Get(s.sigHeader)
 
     // Validate headers
-    if guide == "" || timestamp == "" || signature == "" {
+    if token == "" || timestamp == "" || signature == "" {
         http.Error(rw, "Missing required headers", http.StatusBadRequest)
+        fmt.Fprintln(rw, "Required headers: Authorization, X-Date, X-Request-Signature")
         return
     }
 
-    // Parse request body only if it exists and the method allows it
-    var requestData map[string]interface{}
-    if req.Method == http.MethodPost || req.Method == http.MethodPut { // Only decode body for POST/PUT requests
-        if req.Body != nil {
-            defer req.Body.Close()
-            bodyBytes, err := io.ReadAll(req.Body) // Use io to read the body
-            if err != nil {
-                http.Error(rw, "Error reading request body", http.StatusBadRequest)
-                return
-            }
-
-            // Reset the body so it can be passed downstream
-            req.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
-
-            // Decode the body into a map
-            if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
-                http.Error(rw, "Invalid request body", http.StatusBadRequest)
-                return
-            }
-        }
-    }
-
-    // Calculate expected signature
-    expectedSignature, err := s.calculateSignature(guide, timestamp, requestData)
+    // Parse timestamp
+    parsedTime, err := time.Parse(time.RFC1123, timestamp)
     if err != nil {
-        http.Error(rw, "Error calculating signature", http.StatusInternalServerError)
+        http.Error(rw, "Invalid date format", http.StatusBadRequest)
+        fmt.Fprintln(rw, "X-Date must be in RFC1123 format (e.g., Fri, 14 Feb 2025 11:20:00 GMT)")
         return
     }
 
-    // Validate the signature
-    if signature != expectedSignature {
+    // Check if timestamp is within allowed range (e.g., ±1 minute)
+    if !parsedTime.Add(1 * time.Minute).After(time.Now()) || !parsedTime.Add(-1*time.Minute).Before(time.Now()) {
+        http.Error(rw, "Expired timestamp", http.StatusUnauthorized)
+        fmt.Fprintln(rw, "X-Date timestamp must be within ±1 minute of the current time")
+        return
+    }
+
+    // Compute expected signature
+    expectedSig, err := s.computeSignature(token, timestamp)
+    if err != nil {
+        http.Error(rw, "Error computing signature", http.StatusInternalServerError)
+        fmt.Fprintln(rw, err)
+        return
+    }
+
+    // Verify signature
+    if strings.ToLower(signature) != strings.ToLower(expectedSig) {
         http.Error(rw, "Invalid signature", http.StatusUnauthorized)
+        fmt.Fprintln(rw, "Provided signature does not match the expected value")
         return
     }
 
@@ -94,69 +93,27 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
     s.next.ServeHTTP(rw, req)
 }
 
-// calculateSignature computes the SHA-256 hash and encodes it as Base64
-func (s *SignatureVerifier) calculateSignature(guide string, timestamp string, requestData map[string]interface{}) (string, error) {
-    values := extractValues(requestData)
-    allowedChars := "abcdefghijklmnopqrstuvwxyz0123456789-/."
-    concatenatedString := guide + timestamp + strings.Join(values, "")
-
-    normalizedString := removeAccents(strings.ToLower(concatenatedString))
-    filteredString := filterString(normalizedString, allowedChars)
-
-    hash := sha256.Sum256([]byte(filteredString))
-    hexHash := hex.EncodeToString(hash[:])
-    signature := base64.StdEncoding.EncodeToString([]byte(hexHash))
-
-    return signature, nil
-}
-
-// extractValues recursively extracts values from a JSON structure
-func extractValues(data interface{}) []string {
-    var values []string
-
-    switch v := data.(type) {
-    case map[string]interface{}:
-        keys := make([]string, 0, len(v))
-        for k := range v {
-            keys = append(keys, k)
-        }
-        sort.Strings(keys)
-
-        for _, k := range keys {
-            values = append(values, extractValues(v[k])...)
-        }
-    case []interface{}:
-        for _, item := range v {
-            values = append(values, extractValues(item)...)
-        }
-    default:
-        if v != nil {
-            values = append(values, fmt.Sprint(v))
-        }
+// Helper function to extract the token from the Authorization header
+func extractTokenFromAuthHeader(header string) string {
+    if header == "" || !strings.HasPrefix(header, "Bearer ") {
+        return ""
     }
-
-    return values
+    return strings.TrimPrefix(header, "Bearer ")
 }
 
-// removeAccents removes accented characters from a string
-func removeAccents(s string) string {
-    return strings.Map(func(r rune) rune {
-        switch {
-        case unicode.Is(unicode.Mn, r):
-            return -1
-        default:
-            return r
-        }
-    }, s)
-}
+// Helper function to compute the signature
+func (s *SignatureVerifier) computeSignature(token, timestamp string) (string, error) {
+    // Concatenate data: token + timestamp + secretKey
+    data := fmt.Sprintf("%s%s%s", token, timestamp, s.secretKey)
 
-// filterString filters a string to allow only specific characters
-func filterString(s string, allowed string) string {
-    var result strings.Builder
-    for _, c := range s {
-        if strings.ContainsRune(allowed, c) {
-            result.WriteRune(c)
-        }
-    }
-    return result.String()
+    // Compute SHA-256 hash
+    hash := sha256.Sum256([]byte(data))
+
+    // Convert hash to hexadecimal representation
+    hexSig := hex.EncodeToString(hash[:])
+
+    // Encode as Base64 (optional, depending on your needs)
+    base64Sig := base64.StdEncoding.EncodeToString([]byte(hexSig))
+
+    return base64Sig, nil
 }
