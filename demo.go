@@ -7,6 +7,7 @@ import (
     "encoding/hex"
     "encoding/json"
     "fmt"
+    "io" // Add this import
     "net/http"
     "sort"
     "strings"
@@ -25,7 +26,6 @@ func CreateConfig() *Config {
     }
 }
 
-// SignatureVerifier represents the middleware
 type SignatureVerifier struct {
     next         http.Handler
     secretClient string
@@ -43,6 +43,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 // ServeHTTP implements the http.Handler interface
 func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+    // Extract headers
     guide := req.Header.Get("X-Guide")
     timestamp := req.Header.Get("X-Timestamp")
     signature := req.Header.Get("X-Signature")
@@ -52,18 +53,20 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
         return
     }
 
-    // Parse request body
+    // Parse request body only if it exists and the method allows it
     var requestData map[string]interface{}
-    if req.Body != nil {
+    if req.Method == http.MethodPost || req.Method == http.MethodPut {
         defer req.Body.Close()
-        bodyBytes, err := io.ReadAll(req.Body)
+        bodyBytes, err := io.ReadAll(req.Body) // Requires 'io' package
         if err != nil {
             http.Error(rw, "Error reading request body", http.StatusBadRequest)
             return
         }
 
+        // Reset the body so it can be passed downstream
         req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
+        // Decode the body into a map
         if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
             http.Error(rw, "Invalid request body", http.StatusBadRequest)
             return
