@@ -41,6 +41,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 }
 
 func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+    // Extract headers
     guide := req.Header.Get("X-Guide")
     timestamp := req.Header.Get("X-Timestamp")
     signature := req.Header.Get("X-Signature")
@@ -50,12 +51,25 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
         return
     }
 
-    // Parse request body
+    // Parse request body only if it exists and the method allows it
     var requestData map[string]interface{}
-    if req.Body != nil {
-        if err := json.NewDecoder(req.Body).Decode(&requestData); err != nil {
-            http.Error(rw, "Invalid request body", http.StatusBadRequest)
-            return
+    if req.Method == http.MethodPost || req.Method == http.MethodPut { // Only decode body for POST/PUT requests
+        if req.Body != nil {
+            defer req.Body.Close()
+            bodyBytes, err := io.ReadAll(req.Body)
+            if err != nil {
+                http.Error(rw, "Error reading request body", http.StatusBadRequest)
+                return
+            }
+
+            // Reset the body so it can be passed downstream
+            req.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+
+            // Decode the body into a map
+            if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+                http.Error(rw, "Invalid request body", http.StatusBadRequest)
+                return
+            }
         }
     }
 
@@ -66,11 +80,13 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
         return
     }
 
+    // Validate the signature
     if signature != expectedSignature {
         http.Error(rw, "Invalid signature", http.StatusUnauthorized)
         return
     }
 
+    // Pass the request to the next handler
     s.next.ServeHTTP(rw, req)
 }
 
