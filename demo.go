@@ -5,6 +5,7 @@ import (
     "crypto/sha256"
     "encoding/base64"
     "encoding/hex"
+    "log" // Import the standard log package
     "net/http"
     "strings"
     "unicode"
@@ -45,7 +46,6 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
     timestamp := req.Header.Get("X-Timestamp")
     signature := req.Header.Get("X-Signature")
     authorization := req.Header.Get("Authorization")
-
     if guide == "" || timestamp == "" || signature == "" || authorization == "" {
         http.Error(rw, "Missing required headers", http.StatusBadRequest)
         return
@@ -66,7 +66,7 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
     }
 
     // Log the expected signature for debugging
-    logging.Infof("Expected Signature: %s", expectedSignature)
+    log.Printf("Expected Signature: %s", expectedSignature)
 
     // Validate the signature
     if signature != expectedSignature {
@@ -86,34 +86,33 @@ func (s *SignatureVerifier) calculateSignature(guide, timestamp, token string) (
     concatenatedString := guide + timestamp + token + s.secretClient
 
     // Log the concatenated string for debugging
-    logging.Infof("Concatenated String: %s", concatenatedString)
+    log.Printf("Concatenated String: %s", concatenatedString)
 
     // Normalize concatenated string
     normalizedString := removeAccents(strings.ToLower(concatenatedString))
     filteredString := filterString(normalizedString, allowedChars)
 
     // Log the normalized and filtered string for debugging
-    logging.Infof("Normalized String: %s", normalizedString)
-    logging.Infof("Filtered String: %s", filteredString)
+    log.Printf("Normalized String: %s", normalizedString)
+    log.Printf("Filtered String: %s", filteredString)
 
     // Compute SHA-256 hash
     hash := sha256.Sum256([]byte(filteredString))
     hexHash := hex.EncodeToString(hash[:])
 
     // Log the hex hash for debugging
-    logging.Infof("Hex Hash: %s", hexHash)
+    log.Printf("Hex Hash: %s", hexHash)
 
     // Encode as Base64
     signature := base64.StdEncoding.EncodeToString([]byte(hexHash))
 
     // Log the final Base64 signature for debugging
-    logging.Infof("Base64 Signature: %s", signature)
+    log.Printf("Base64 Signature: %s", signature)
 
     return signature, nil
 }
 
 // Helper functions
-
 // removeAccents removes accented characters from a string
 func removeAccents(s string) string {
     return strings.Map(func(r rune) rune {
