@@ -76,26 +76,28 @@ func (s *SignatureVerifier) ServeHTTP(rw http.ResponseWriter, req *http.Request)
 }
 
 // calculateSignature computes the SHA-256 hash and encodes it as Base64
-func (s *SignatureVerifier) calculateSignature(guide, timestamp, token string) (string, error) {
+func (s *SignatureVerifier) calculateSignature(guide, timestamp string, requestData map[string]interface{}) (string, error) {
+    values := extractValues(requestData)
     allowedChars := "abcdefghijklmnopqrstuvwxyz0123456789-/."
+    concatenatedString := guide + timestamp + strings.Join(values, "")
 
-    // Concatenate data: guide + timestamp + token + secretClient
-    concatenatedString := guide + timestamp + token + s.secretClient
+    logging.Infof("Concatenated String: %s", concatenatedString)
 
-    // Normalize concatenated string
     normalizedString := removeAccents(strings.ToLower(concatenatedString))
     filteredString := filterString(normalizedString, allowedChars)
 
-    // Compute SHA-256 hash
+    logging.Infof("Normalized String: %s", normalizedString)
+    logging.Infof("Filtered String: %s", filteredString)
+
     hash := sha256.Sum256([]byte(filteredString))
     hexHash := hex.EncodeToString(hash[:])
-
-    // Encode as Base64
     signature := base64.StdEncoding.EncodeToString([]byte(hexHash))
+
+    logging.Infof("Hex Hash: %s", hexHash)
+    logging.Infof("Base64 Signature: %s", signature)
 
     return signature, nil
 }
-
 // Helper functions
 func removeAccents(s string) string {
     return strings.Map(func(r rune) rune {
